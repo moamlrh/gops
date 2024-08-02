@@ -1,0 +1,8 @@
+.env
+build
+output
+out
+*.out
+*.log
+*.log.*
+*.log-*
