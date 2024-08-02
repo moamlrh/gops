@@ -1,4 +1,4 @@
-module portscanner
+module github.com/moamlrh/gops
 
 go 1.22.5
 
