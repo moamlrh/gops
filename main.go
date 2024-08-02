@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -33,6 +34,27 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 	portsChan := make(chan int, ps.workers)
 
 	var wg sync.WaitGroup
+	var scannedPorts int32 = 0
+	lastReportedMilestone := int32(0)
+	minleStones := []int32{1000, 10000, 20000, 30000, 40000, 50000, 60000}
+
+	go func() {
+		for {
+			time.Sleep(1 * time.Second)
+			scanned := atomic.LoadInt32(&scannedPorts)
+			for _, milestone := range minleStones {
+				if scanned >= milestone && lastReportedMilestone < milestone {
+					log.Printf("Scanned %d ports", milestone)
+					atomic.StoreInt32(&lastReportedMilestone, milestone)
+					break
+				}
+			}
+			if scanned >= int32(endPort-startPort+1) {
+				return
+			}
+		}
+	}()
+
 	for i := 0; i < ps.workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -50,6 +72,7 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 					if ScanPort(ctx, ps.ip, port, timeout) {
 						log.Printf("\033[32mPort %d is open\033[0m", port)
 					}
+					atomic.AddInt32(&scannedPorts, 1)
 				}
 			}
 		}()
@@ -70,10 +93,11 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 }
 
 func main() {
+	now := time.Now()
 	ip := flag.String("ip", "142.250.187.110", "IP address to scan")
 	workers := flag.Int("workers", 250, "Number of concurrent workers")
 	startPort := flag.Int("start", 1, "Start port")
-	endPort := flag.Int("end", 1000, "End port")
+	endPort := flag.Int("end", 40000, "End port")
 	timeout := flag.Duration("timeout", 500*time.Millisecond, "Timeout for each port scan")
 	rateLimit := flag.Float64("rate", 1000, "Maximum scan rate (ports per second)")
 	flag.Parse()
@@ -84,6 +108,10 @@ func main() {
 		<-signalChan
 		log.Println("Shutting down...")
 		os.Exit(0)
+	}()
+
+	defer func() {
+		log.Printf("Execution time: %v", time.Since(now))
 	}()
 
 	ps := &PortScanner{
