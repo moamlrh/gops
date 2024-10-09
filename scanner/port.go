@@ -15,46 +15,45 @@ import (
 type PortScanner struct {
 	ip      string
 	workers int
+	timeout time.Duration
 }
 
-func NewPortScanner(ip string, workers int) *PortScanner {
+func NewPortScanner(ip string, workers int, timeout time.Duration) *PortScanner {
 	return &PortScanner{
 		ip:      ip,
 		workers: workers,
+		timeout: timeout,
 	}
 }
 
-func ScanPort(ctx context.Context, ip string, port int, timeout time.Duration) bool {
-	target := fmt.Sprintf("%s:%d", ip, port)
-	conn, err := net.DialTimeout("tcp", target, timeout)
-	if err == nil {
-		conn.Close()
-		return true
-	}
-	return false
-}
-
-func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeout time.Duration, rateLimiter *rate.Limiter) {
+func (ps *PortScanner) Run(ctx context.Context, startPort, endPort int, rateLimiter *rate.Limiter) {
 	portsChan := make(chan int, ps.workers)
 
 	var wg sync.WaitGroup
 	var scannedPorts int32 = 0
 	lastReportedMilestone := int32(0)
-	minleStones := []int32{1000, 10000, 20000, 30000, 40000, 50000, 60000}
+	mileStones := []int32{1000, 10000, 20000, 30000, 40000, 50000, 60000}
 
+	wg.Add(1)
 	go func() {
 		for {
-			time.Sleep(1 * time.Second)
-			scanned := atomic.LoadInt32(&scannedPorts)
-			for _, milestone := range minleStones {
-				if scanned >= milestone && lastReportedMilestone < milestone {
-					log.Printf("Scanned %d ports", milestone)
-					atomic.StoreInt32(&lastReportedMilestone, milestone)
-					break
-				}
-			}
-			if scanned >= int32(endPort-startPort+1) {
+			select {
+			case <-ctx.Done():
+				wg.Done()
 				return
+			default:
+				time.Sleep(1 * time.Second)
+				scanned := atomic.LoadInt32(&scannedPorts)
+				for _, milestone := range mileStones {
+					if scanned >= milestone && lastReportedMilestone < milestone {
+						log.Printf("Scanned %d ports", milestone)
+						atomic.StoreInt32(&lastReportedMilestone, milestone)
+						break
+					}
+				}
+				if scanned >= int32(endPort-startPort+1) {
+					return
+				}
 			}
 		}
 	}()
@@ -65,7 +64,6 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 			defer wg.Done()
 			for port := range portsChan {
 				if err := rateLimiter.Wait(ctx); err != nil {
-					log.Printf("Rate limiter error: %v", err)
 					return
 				}
 
@@ -73,7 +71,7 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 				case <-ctx.Done():
 					return
 				default:
-					if ScanPort(ctx, ps.ip, port, timeout) {
+					if ps.ScanPort(ctx, ps.ip, port) {
 						log.Printf("\033[32mPort %d is open\033[0m", port)
 					}
 					atomic.AddInt32(&scannedPorts, 1)
@@ -94,4 +92,14 @@ func (ps *PortScanner) Start(ctx context.Context, startPort, endPort int, timeou
 	}()
 
 	wg.Wait()
+}
+
+func (ps *PortScanner) ScanPort(ctx context.Context, ip string, port int) bool {
+	target := fmt.Sprintf("%s:%d", ip, port)
+	conn, err := net.DialTimeout("tcp", target, ps.timeout)
+	if err == nil {
+		conn.Close()
+		return true
+	}
+	return false
 }
